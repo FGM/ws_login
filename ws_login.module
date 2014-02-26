@@ -1,0 +1,97 @@
+<?php
+/**
+ * @file
+ * ws_login.module
+ *
+ * @author: Frédéric G. MARAND <fgm@osinet.fr>
+ *
+ * @copyright (c) 2014 Ouest Systèmes Informatiques (OSInet).
+ *
+ * @license General Public License version 2 or later
+ */
+
+/**
+ * Implements hook_user().
+ */
+function ws_login_menu() {
+  $items = array();
+
+  $items['ws_login/login/%ws_login_user_by_name/%'] = array(
+    'type' => MENU_CALLBACK,
+    'access callback' => 'user_is_anonymous',
+    'page callback' => 'ws_login_login',
+    'page arguments' => array(2, 3),
+  );
+
+  $items['ws_login/logout'] = array(
+    'type' => MENU_CALLBACK,
+    'access callback' => 'user_is_logged_in',
+    'page callback' => 'ws_login_logout',
+  );
+
+  return $items;
+}
+
+/**
+ * Page callback: login account.
+ *
+ * @param $account
+ *   Fully loaded user object
+ * @param $password
+ *   Clear text password
+ */
+function ws_login_login($account, $password) {
+  $form_state = array(
+    'values' => array(
+      'name' => $account->name,
+      'pass' => $password,
+    ),
+  );
+
+  drupal_form_submit('user_login', $form_state);
+  if (!user_is_anonymous()) {
+    watchdog('ws_login', 'Session opened for %name.', array('%name' => $account->name), WATCHDOG_NOTICE);
+    drupal_static_reset();
+    $ret = $account;
+  }
+  else {
+    watchdog('ws_login', 'Session open failure for %name.', array('%name' => $account->name), WATCHDOG_WARNING);
+    drupal_add_http_header('Status', '401 Unauthorized');
+    drupal_add_http_header('WWW-Authenticate', 'Drupal WS_Login');
+    session_destroy();
+    $ret = NULL;
+  }
+  drupal_json_output($ret);
+  exit();
+}
+
+/**
+ * Page callback: logout current session.
+ */
+function ws_login_logout() {
+  global $user;
+
+  watchdog('ws_login', 'Session closed for %name.', array('%name' => $user->name));
+
+  module_invoke_all('user_logout', $user);
+
+  // Destroy the current session, and reset $user to the anonymous user.
+  session_destroy();
+
+  drupal_add_http_header('Status', '200 No content');
+  drupal_json_output(null);
+  exit();
+}
+
+/**
+ * Menu loader: load user by name.
+ *
+ * @param $name
+ *   User name
+ *
+ * @return mixed
+ */
+function ws_login_user_by_name_load($name) {
+  $account = user_load_by_name($name);
+  return $account;
+}

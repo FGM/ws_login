@@ -1,0 +1,5 @@
+name = WS Login
+description = Web Service Login
+php = 5.3
+core = 7.x
+
