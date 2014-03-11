@@ -16,49 +16,82 @@
 function ws_login_menu() {
   $items = array();
 
-  $items['ws_login/login/%ws_login_user_by_name/%'] = array(
+  $items['ws_login/login'] = array(
     'type' => MENU_CALLBACK,
-    'access callback' => 'user_is_anonymous',
+    'access callback' => TRUE,
     'page callback' => 'ws_login_login',
-    'page arguments' => array(2, 3),
+    'delivery callback' => 'ws_login_json_deliver',
   );
 
   $items['ws_login/logout'] = array(
     'type' => MENU_CALLBACK,
     'access callback' => 'user_is_logged_in',
     'page callback' => 'ws_login_logout',
+    'delivery callback' => 'ws_login_json_deliver',
   );
 
   return $items;
 }
 
+function ws_login_check_access($method, $anonymous, array $args = array()) {
+  $method = drupal_strtoupper($method);
+
+  if (empty($args)) {
+    if ($method !== 'POST') {
+      $ret = 405;
+    }
+    else {
+      $ret = $anonymous ? 100 : 403;
+    }
+  }
+  else {
+    $ret = 404;
+  }
+
+  return $ret;
+}
+
+function ws_login_get_credentials($raw_data) {
+  $data = drupal_json_decode($raw_data);
+  $default = array(
+    'name' => NULL,
+    'pass' => NULL,
+  );
+  $data = array_intersect_key($data, $default);
+  return $data;
+}
+
 /**
  * Page callback: login account.
- *
- * @param $account
- *   Fully loaded user object
- * @param $password
- *   Clear text password
  */
-function ws_login_login($account, $password) {
+function ws_login_login() {
+  var_dump($_REQUEST);
+  $access = ws_login_check_access($_SERVER['REQUEST_METHOD'], user_is_anonymous(), func_get_args());
+  if ($access != 100) {
+    return $access;
+  }
+
+  $credentials = ws_login_get_credentials(file_get_contents('php://input'));
   $form_state = array(
-    'values' => array(
-      'name' => $account->name,
-      'pass' => $password,
-    ),
+    'values' => $credentials,
   );
 
   drupal_form_submit('user_login', $form_state);
+  $name_arg = array('%name' => $credentials['name']);
   if (!user_is_anonymous()) {
-    watchdog('ws_login', 'Session opened for %name.', array('%name' => $account->name), WATCHDOG_NOTICE);
+    // Do not log session opening: it has already been logged by Drupal.
+    // watchdog('ws_login', 'Session opened for %name.', $name_arg, WATCHDOG_NOTICE);
     drupal_static_reset();
-    $ret = $account;
+    // 200 return by default: no need to set it.
+    $ret = $GLOBALS['user'];
   }
   else {
-    watchdog('ws_login', 'Session open failure for %name.', array('%name' => $account->name), WATCHDOG_WARNING);
+    watchdog('ws_login', 'Session open failure for %name.', $name_arg, WATCHDOG_WARNING);
     drupal_add_http_header('Status', '401 Unauthorized');
     drupal_add_http_header('WWW-Authenticate', 'Drupal WS_Login');
-    session_destroy();
+    if (drupal_session_started()) {
+      session_destroy();
+    }
     $ret = NULL;
   }
   drupal_json_output($ret);
@@ -78,20 +111,80 @@ function ws_login_logout() {
   // Destroy the current session, and reset $user to the anonymous user.
   session_destroy();
 
-  drupal_add_http_header('Status', '200 No content');
+  drupal_add_http_header('Status', '205 Reset content');
   drupal_json_output(null);
   exit();
 }
 
-/**
- * Menu loader: load user by name.
- *
- * @param $name
- *   User name
- *
- * @return mixed
- */
-function ws_login_user_by_name_load($name) {
-  $account = user_load_by_name($name);
-  return $account;
+function ws_login_json_deliver($controller_result = NULL) {
+  // Standard JSON can be returned to a browser's XHR object, and to non-browser user agents.
+  // @see http://www.ietf.org/rfc/rfc4627.txt?number=4627
+  drupal_add_http_header('Content-Type', 'application/json; charset=utf-8');
+
+  if (is_int($controller_result)) {
+    switch ($controller_result) {
+      // Not supported by Drupal 7 menu system.
+      case 405:
+        // Print a 405 result.
+        drupal_add_http_header('Status', '405 Method not allowed');
+        watchdog('ws_login', 'method not allowed: @method', array('@method' => $_SERVER['REQUEST_METHOD']), WATCHDOG_WARNING);
+        // @TODO check if something can be done for drupal_fast_404 with non-HTML output.
+
+        // - Ignore "destination" query key.
+
+        $ret = array(
+          'message' => t('Method not allowed'),
+        );
+        break;
+
+      case 404:
+        // Print a 404 result.
+        drupal_add_http_header('Status', '404 Not Found');
+        // Special handling in core.
+        watchdog('page not found', check_plain($_GET['q']), NULL, WATCHDOG_WARNING);
+        // @TODO check if something can be done for drupal_fast_404 with non-HTML output.
+
+        // - Ignore "destination" query key.
+        // - Ignore "site404" variable.
+
+        $ret = array(
+          'message' => t('Page not found'),
+        );
+        break;
+
+      // Denied from menu system.
+      case MENU_ACCESS_DENIED:
+
+      // Denied from controller-triggered access check
+      case 403:
+        // Print a 403 result.
+        drupal_add_http_header('Status', '403 Forbidden');
+        // Special handling in core.
+        watchdog('access denied', check_plain($_GET['q']), NULL, WATCHDOG_WARNING);
+
+        // - Ignore "destination" query key.
+        // - Ignore "site403" variable..
+        $ret = array(
+          'message' => t('Access denied'),
+        );
+        break;
+
+      case 503:
+        // Print a 503 result.
+        drupal_add_http_header('Status', '503 Service unavailable');
+        $ret = array(
+          'message' => t('Site under maintenance'),
+          'details' => filter_xss_admin(variable_get('maintenance_mode_message',
+            t('@site is currently under maintenance. We should be back shortly. Thank you for your patience.', array(
+              '@site' => variable_get('site_name', 'Drupal'),
+        )))));
+        break;
+    }
+  }
+  else {
+    $ret = drupal_json_encode($controller_result);
+  }
+  // drupal_json_output() does not set the charset to UTF-8.
+  print drupal_json_encode($ret);
+  drupal_page_footer();
 }
