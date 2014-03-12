@@ -65,7 +65,6 @@ function ws_login_get_credentials($raw_data) {
  * Page callback: login account.
  */
 function ws_login_login() {
-  var_dump($_REQUEST);
   $access = ws_login_check_access($_SERVER['REQUEST_METHOD'], user_is_anonymous(), func_get_args());
   if ($access != 100) {
     return $access;
